@@ -85,7 +85,8 @@ export function validateConfig() {
   if (!existsSync(sysPath)) warnings.push(`Khong thay ${config.systemPromptFile} — bot chay voi system prompt rong`);
   if (!config.claudeOauthToken)
     warnings.push(
-      'CLAUDE_CODE_OAUTH_TOKEN trong — bot se dua vao dang nhap Keychain. Khi chay nen (launchd) nen dung token tu `claude setup-token`.'
+      'CLAUDE_CODE_OAUTH_TOKEN trong — dung dang nhap Keychain (`claude` → /login). Da verify chay OK ca khi bot chay nen qua launchd.' +
+        ' Neu claude bao 401: `claude setup-token` roi `bash scripts/token-from-clipboard.sh --claude`.'
     );
   if (config.allowedChannelIds.length === 0)
     warnings.push('ALLOWED_CHANNEL_IDS trong — bot tra loi o moi channel no thay (van chi cho user trong whitelist)');

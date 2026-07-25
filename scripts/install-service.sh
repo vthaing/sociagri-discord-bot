@@ -28,28 +28,41 @@ cat > "$PLIST" <<PLIST_EOF
 
   <key>RunAtLoad</key>
   <true/>
+
+  <!-- Restart khi bot thoat voi code != 0 (loi tam thoi).
+       Bot dung exit 0 cho loi VINH VIEN (config/token sai) => launchd de yen,
+       khong tao crash-loop vo nghia. -->
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- 60s: du cham de khong dot may neu co loi lap lai, du nhanh de tu hoi phuc -->
   <key>ThrottleInterval</key>
-  <integer>15</integer>
+  <integer>60</integer>
 
   <key>StandardOutPath</key>
   <string>$BOT_DIR/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
   <string>$BOT_DIR/logs/launchd.err.log</string>
 
+  <!-- Standard (khong phai Background): ProcessType=Background bi macOS ha uu tien
+       CPU/IO cho ca bot LAN cac process `claude` con => cau tra loi cham, de cham timeout 180s -->
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
 </dict>
 </plist>
 PLIST_EOF
 
 echo "→ da ghi $PLIST"
 
-# Go ban cu (neu co) roi nap lai
+# Go ban cu (neu co) roi nap lai.
+# enable TRUOC bootstrap: neu label tung bi `launchctl disable` thi bootstrap se
+# that bai voi loi kho hieu (Input/output error).
 launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM" "$PLIST"
 launchctl enable "gui/$UID_NUM/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_NUM" "$PLIST"
 
 echo "→ da nap service $LABEL"
 echo

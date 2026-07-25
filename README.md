@@ -65,8 +65,21 @@ open -e .env      # dán DISCORD_TOKEN, ALLOWED_USER_IDS, CLAUDE_CODE_OAUTH_TOKE
 ### Bước 5 — Kiểm tra rồi chạy thử
 
 ```bash
-npm run check     # kiểm tra config + CLI + đăng nhập + repo
+npm install       # lần đầu clone repo
+```
+
+```bash
+npm run check     # 7 mục: env → CLI → auth Claude → repo → discord.js → Discord API → Gateway
+```
+
+```bash
 npm start         # chạy bot (Ctrl-C để dừng)
+```
+
+Muốn thử bot mà không cần Discord:
+
+```bash
+npm run ask -- "dự án gồm những nền tảng nào?"
 ```
 
 Vào Discord, @mention bot: `@SociAgri Assistant dự án đang làm tới đâu rồi?`
@@ -77,16 +90,41 @@ Vào Discord, @mention bot: `@SociAgri Assistant dự án đang làm tới đâu
 bash scripts/install-service.sh
 ```
 
-Bot thành **launchd agent**: tự khởi động khi bạn đăng nhập máy, tự restart nếu crash.
+Bot thành **launchd agent**: tự chạy khi bạn đăng nhập máy, tự restart nếu crash.
+
+> **Vì sao launchd chứ không phải `nohup`?** `nohup` chỉ giữ process sống sau khi bạn đóng
+> Terminal — máy khởi động lại là bot mất. launchd làm cả hai: chạy nền *và* tự lên lại sau reboot.
 
 ```bash
-tail -f logs/bot.log                      # xem log
-bash scripts/uninstall-service.sh         # tắt bot
+tail -f logs/bot.log                                          # xem log
+launchctl kickstart -k gui/$(id -u)/com.sociagri.discordbot    # restart (sau khi sửa code)
+launchctl print gui/$(id -u)/com.sociagri.discordbot | head -20 # trạng thái
+bash scripts/uninstall-service.sh                             # tắt hẳn
 ```
 
-**Để máy không ngủ** (nếu không bot sẽ offline khi máy sleep):
-- System Settings → Lock Screen / Displays → đặt *Prevent automatic sleeping when display is off*, hoặc
-- chạy `caffeinate -s` trong một cửa sổ Terminal, hoặc dùng app **Amphetamine**.
+⚠️ **Chỉ chạy MỘT instance.** Nếu service đang chạy mà bạn `npm start` thêm, bot sẽ **trả lời 2 lần
+cho mỗi câu hỏi**. Kiểm tra: `pgrep -fl "src/bot.mjs"`.
+
+**Máy không được ngủ**, nếu không bot offline khi sleep:
+- System Settings → Lock Screen / Displays → *Prevent automatic sleeping when display is off*, hoặc
+- `caffeinate -s` trong một cửa sổ Terminal, hoặc app **Amphetamine**.
+
+**LaunchAgent chạy khi bạn đăng nhập máy**, không phải lúc máy vừa boot. Nếu máy reboot mà chưa ai
+đăng nhập (VD sau khi mất điện, có FileVault) thì bot chưa lên — đăng nhập là nó tự chạy.
+
+#### Bot tự xử lý lỗi thế nào
+
+| Tình huống | Bot làm gì | launchd |
+|---|---|---|
+| Mất mạng / gateway đứt | discord.js tự reconnect; nếu **5 phút** không lại được thì tự thoát | restart sau 60s |
+| Phiên Discord bị vô hiệu | thoát ngay | restart |
+| Lỗi bất ngờ (uncaught) | log stack rồi thoát | restart |
+| **Token/intent sai, config sai** | log lý do rõ ràng rồi thoát code 0 | **không** restart (tránh crash-loop vô nghĩa) |
+| Log đầy 10MB | tự xoay vòng (`bot.log.1` … `.3`) | — |
+| Hết dung lượng đĩa | bỏ ghi file, vẫn log ra stdout | không crash |
+
+Nghĩa là: nếu bot "im lặng" hẳn, xem `logs/bot.log` — sẽ có dòng ERROR nói cần sửa gì, rồi
+`launchctl kickstart -k gui/$(id -u)/com.sociagri.discordbot`.
 
 ---
 

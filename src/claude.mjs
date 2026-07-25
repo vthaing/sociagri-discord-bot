@@ -52,6 +52,22 @@ export class ClaudeError extends Error {
   }
 }
 
+/** Cac process claude dang chay — de kill sach khi bot shutdown (khong de lai process mo coi) */
+const liveChildren = new Set();
+
+export function killLiveChildren() {
+  let n = 0;
+  for (const child of liveChildren) {
+    try {
+      child.kill('SIGTERM');
+      n++;
+    } catch {
+      /* da chet */
+    }
+  }
+  return n;
+}
+
 /**
  * @param {object} opts
  * @param {string} opts.prompt        Cau hoi (da boc trong <discord_question>)
@@ -93,6 +109,8 @@ export async function askClaude({ prompt, cwd, claudeBin, model, systemPrompt, s
       },
     });
 
+    liveChildren.add(child);
+
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -101,20 +119,36 @@ export async function askClaude({ prompt, cwd, claudeBin, model, systemPrompt, s
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
+      clearTimeout(hardKillTimer);
+      liveChildren.delete(child);
       fn(arg);
     };
 
+    let hardKillTimer = null;
     const killTimer = setTimeout(() => {
       child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000);
+      // SIGKILL neu no khong chet — giu handle de clearTimeout, khong fire-and-forget
+      hardKillTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* da chet */
+        }
+      }, 5_000);
       finish(reject, new ClaudeError(`Claude qua thoi gian ${timeoutMs}ms`, { code: 'TIMEOUT' }));
     }, timeoutMs);
 
+    // setEncoding: Node ghep cac byte UTF-8 bi cat giua chunk.
+    // Neu dung d.toString() tren tung chunk thi ky tu tieng Viet nam vat ranh gioi
+    // chunk se thanh ký tự lỗi (câu trả lời tiếng Việt rất dễ gặp).
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
     child.stdout.on('data', (d) => {
-      stdout += d.toString();
+      stdout += d;
     });
     child.stderr.on('data', (d) => {
-      stderr += d.toString();
+      stderr += d;
     });
 
     child.on('error', (err) => {

@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 import { config, validateConfig } from './config.mjs';
 import { askClaude } from './claude.mjs';
-import { fetchDiscordInfo } from './discordInfo.mjs';
+import { fetchDiscordInfo, resolveUsers } from './discordInfo.mjs';
 
 const exec = promisify(execFile);
 const ok = (m) => console.log(`  ✅ ${m}`);
@@ -111,6 +111,16 @@ if (!config.discordToken || errors.some((e) => e.startsWith('DISCORD_TOKEN'))) {
     } else {
       warn('Bot CHUA o server nao — mo link nay de moi bot vao server:');
       console.log(`\n     ${info.inviteUrl}\n`);
+    }
+
+    // Whitelist tro thanh ten that — de phat hien dan sai ID
+    const users = await resolveUsers(config.allowedUserIds, config.discordToken);
+    for (const u of users) {
+      if (u.tag) ok(`whitelist: ${u.id} = ${u.tag}`);
+      else {
+        bad(`whitelist: ${u.id} — ${u.error} (bot se khong bao gio tra loi ID nay)`);
+        fatal++;
+      }
     }
   } catch (err) {
     if (err.status === 401) {

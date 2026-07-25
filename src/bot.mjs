@@ -3,10 +3,26 @@ import path from 'node:path';
 import { ActivityType, Client, Events, GatewayIntentBits, Partials } from 'discord.js';
 
 import { config, validateConfig } from './config.mjs';
-import { askClaude, ClaudeError } from './claude.mjs';
+import { askClaude, ClaudeError, killLiveChildren } from './claude.mjs';
 import { chunkForDiscord, DISCORD_LIMIT } from './chunk.mjs';
 import { redact } from './redact.mjs';
 import { initLogger, log } from './logger.mjs';
+
+/**
+ * Exit code co y nghia voi launchd (plist dung KeepAlive.SuccessfulExit=false):
+ *  - EXIT_NO_RESTART: loi VINH VIEN (config sai, token sai, intent tat) — restart cung vo ich,
+ *    chi tao crash-loop. launchd se de bot nam im; nguoi dung phai sua roi khoi dong lai.
+ *  - EXIT_RESTART: loi TAM THOI (mat mang, gateway chet, bug bat ngo) — launchd restart.
+ */
+const EXIT_NO_RESTART = 0;
+const EXIT_RESTART = 1;
+
+/** Discord close code khong the tu khac phuc */
+const FATAL_WS_CODES = new Set([
+  4004, // authentication failed (token sai)
+  4013, // invalid intents
+  4014, // disallowed intents (chua bat Message Content)
+]);
 
 // ---------------------------------------------------------------- bootstrap
 
@@ -16,8 +32,9 @@ const { errors, warnings } = validateConfig();
 for (const w of warnings) log.warn(w);
 if (errors.length) {
   for (const e of errors) log.error(e);
-  log.error('Thieu cau hinh — dung. Xem README.md');
-  process.exit(1);
+  log.error('Thieu/sai cau hinh — DUNG va KHONG tu restart (restart cung se loi y nhu vay).');
+  log.error('Sua .env (chay: bash scripts/setup-env.sh), kiem tra: npm run check, roi khoi dong lai bot.');
+  process.exit(EXIT_NO_RESTART);
 }
 
 let systemPrompt = '';
@@ -272,28 +289,36 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     if (message.author.bot || message.system) return;
 
-    // Trigger: @mention bot, hoac reply vao tin cua bot
+    // Kiem tra whitelist TRUOC khi lam bat ky viec ton kem nao (REST fetch/ghi log):
+    // nguoi ngoai whitelist khong duoc phep bat bot lam viec gi ca.
     const mentioned = message.mentions.users.has(client.user.id);
+    const maybeReply = Boolean(message.reference?.messageId);
+    if (!mentioned && !maybeReply) return;
+
+    const gate = isAllowed(message);
+    if (!gate.ok) {
+      // Chi log khi that su co nhac ten bot — tranh spam log vi moi reply trong channel
+      if (mentioned) {
+        log.warn('bo qua tin nhan', {
+          why: gate.why,
+          userId: message.author.id,
+          user: message.author.username,
+          channelId: message.channel.id,
+        });
+      }
+      return;
+    }
+
+    // Da qua whitelist moi fetch tin duoc reply
     let repliedToBot = false;
-    if (!mentioned && message.reference?.messageId) {
+    if (!mentioned) {
       try {
         const ref = await message.channel.messages.fetch(message.reference.messageId);
         repliedToBot = ref?.author?.id === client.user.id;
       } catch {
         /* tin cu khong fetch duoc -> bo qua */
       }
-    }
-    if (!mentioned && !repliedToBot) return;
-
-    const gate = isAllowed(message);
-    if (!gate.ok) {
-      log.warn('bo qua tin nhan', {
-        why: gate.why,
-        userId: message.author.id,
-        user: message.author.username,
-        channelId: message.channel.id,
-      });
-      return;
+      if (!repliedToBot) return;
     }
 
     const question = message.content
@@ -351,20 +376,95 @@ client.on(Events.MessageCreate, async (message) => {
 client.on(Events.Error, (err) => log.error('discord client error', { msg: err.message }));
 client.on(Events.Warn, (msg) => log.warn('discord warn', { msg }));
 
+// ---------------------------------------------------------------- watchdog gateway
+//
+// Nguy hiem im lang: gateway dut, discord.js khong reconnect duoc, nhung PROCESS VAN SONG.
+// Bot "online" trong danh sach nhung khong bao gio nhan tin nhan nua, va launchd
+// khong co cach nao biet. => tu thoat de launchd dung lai tu dau.
+const RECONNECT_GRACE_MS = 5 * 60 * 1000;
+let deafTimer = null;
+
+function clearDeafTimer() {
+  if (deafTimer) {
+    clearTimeout(deafTimer);
+    deafTimer = null;
+  }
+}
+
+function armDeafTimer(why) {
+  if (deafTimer) return;
+  deafTimer = setTimeout(() => {
+    log.error(`gateway khong ket noi lai sau ${RECONNECT_GRACE_MS / 1000}s (${why}) — thoat de launchd restart`);
+    shutdown(EXIT_RESTART, 'gateway-deaf');
+  }, RECONNECT_GRACE_MS);
+}
+
+client.on(Events.ShardDisconnect, (event, shardId) => {
+  const code = event?.code;
+  log.warn('shard disconnect', { shardId, code, reason: event?.reason });
+
+  if (FATAL_WS_CODES.has(code)) {
+    log.error(`Discord dong ket noi voi ma ${code} — loi VINH VIEN, khong restart.`);
+    if (code === 4014 || code === 4013) log.error('   → bat MESSAGE CONTENT INTENT o Developer Portal roi chay lai bot');
+    if (code === 4004) log.error('   → DISCORD_TOKEN sai/da bi reset. Chay: bash scripts/setup-env.sh');
+    shutdown(EXIT_NO_RESTART, `ws-${code}`);
+    return;
+  }
+  armDeafTimer(`close code ${code}`);
+});
+
+client.on(Events.ShardReady, (shardId) => {
+  clearDeafTimer();
+  log.info('shard ready', { shardId });
+});
+client.on(Events.ShardResume, (shardId, replayed) => {
+  clearDeafTimer();
+  log.info('shard resume', { shardId, replayed });
+});
+client.on(Events.Invalidated, () => {
+  log.error('phien Discord bi vo hieu (invalidated) — thoat de launchd restart');
+  shutdown(EXIT_RESTART, 'invalidated');
+});
+
+// ---------------------------------------------------------------- shutdown sach
+let shuttingDown = false;
+
+function shutdown(code, why) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearDeafTimer();
+
+  // Khong de lai process `claude` mo coi khi bot chet
+  const killed = killLiveChildren();
+  if (killed) log.info(`da dung ${killed} process claude dang chay`);
+
+  log.info(`shutdown (${why}) — exit ${code}${code === EXIT_NO_RESTART ? ' (launchd KHONG restart)' : ' (launchd se restart)'}`);
+
+  const done = () => process.exit(code);
+  const timer = setTimeout(done, 5_000); // khong treo mai neu destroy() khong ve
+  client
+    .destroy()
+    .catch(() => {})
+    .finally(() => {
+      clearTimeout(timer);
+      done();
+    });
+}
+
 process.on('unhandledRejection', (err) => log.error('unhandledRejection', { msg: String(err?.message || err) }));
 process.on('uncaughtException', (err) => {
-  log.error('uncaughtException — thoat de launchd restart', { msg: err.message });
-  process.exit(1);
+  log.error('uncaughtException — thoat de launchd restart', { msg: err.message, stack: err.stack?.slice(0, 400) });
+  shutdown(EXIT_RESTART, 'uncaughtException');
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    log.info(`nhan ${sig} — dong ket noi`);
-    client.destroy().finally(() => process.exit(0));
-  });
+  process.on(sig, () => shutdown(EXIT_NO_RESTART, sig));
 }
 
 client.login(config.discordToken).catch((err) => {
-  log.error('dang nhap Discord that bai — kiem tra DISCORD_TOKEN', { msg: err.message });
-  process.exit(1);
+  const msg = String(err?.message || err);
+  const permanent = /token|intent|unauthorized|401|disallowed/i.test(msg);
+  log.error(`dang nhap Discord that bai${permanent ? ' (loi vinh vien)' : ' (co the tam thoi)'}`, { msg });
+  if (permanent) log.error('   → kiem tra DISCORD_TOKEN + intent: npm run check');
+  process.exit(permanent ? EXIT_NO_RESTART : EXIT_RESTART);
 });

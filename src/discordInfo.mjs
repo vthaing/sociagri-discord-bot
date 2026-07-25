@@ -30,6 +30,27 @@ async function api(pathname, token) {
 }
 
 /**
+ * Doi user ID -> ten that, de xac nhan whitelist dung nguoi (de dan nham ID).
+ * @returns {Promise<Array<{id:string, tag:string|null, error:string|null}>>}
+ */
+export async function resolveUsers(ids, token) {
+  const out = [];
+  for (const id of ids) {
+    try {
+      const u = await api(`/users/${id}`, token);
+      out.push({
+        id,
+        tag: `${u.username}${u.discriminator && u.discriminator !== '0' ? '#' + u.discriminator : ''}`,
+        error: null,
+      });
+    } catch (err) {
+      out.push({ id, tag: null, error: err.status === 404 ? 'khong ton tai' : String(err.message).slice(0, 60) });
+    }
+  }
+  return out;
+}
+
+/**
  * @returns {Promise<{bot:{id:string,tag:string}, app:{id:string,name:string,publicBot:boolean,messageContentIntent:boolean}, guilds:Array<{id:string,name:string}>, inviteUrl:string}>}
  */
 export async function fetchDiscordInfo(token) {
