@@ -54,6 +54,9 @@ export const config = {
   attachmentsEnabled: bool(process.env.ATTACHMENTS_ENABLED, true),
   attachmentMaxCount: num(process.env.ATTACHMENT_MAX_COUNT, 4),
   attachmentMaxBytes: num(process.env.ATTACHMENT_MAX_BYTES, 10 * 1024 * 1024),
+  // true = cau hoi CO ANH khong luu transcript (anh bi luu base64 vinh vien o
+  // ~/.claude/projects). Danh doi: cau hoi do khong giu ngu canh hoi thoai.
+  attachmentNoPersist: bool(process.env.ATTACHMENT_NO_PERSIST, true),
 
   systemPromptFile: process.env.SYSTEM_PROMPT_FILE || 'system-prompt.md',
   logFile: process.env.LOG_FILE || 'logs/bot.log',

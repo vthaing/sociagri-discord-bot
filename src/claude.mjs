@@ -12,6 +12,15 @@ import { spawn } from 'node:child_process';
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob'];
 
+/**
+ * 🔴 Bai hoc da tra gia (25/7): `allow: ['Read','Grep','Glob']` (khong kem duong dan)
+ * cho phep doc/grep BAT KY file nao tren may — deny glob kieu `Read(**\/.env*)`
+ * CHI co tac dung trong repo. Da verify bang canary:
+ *   allow tran        -> doc duoc .env NGOAI repo (vd .env cua chinh repo bot: DISCORD_TOKEN)
+ *   allow Read(repo/**) -> chan, nhung Grep tran VAN grep duoc file thuong ngoai repo
+ *   allow Read+Grep+Glob deu gioi han theo repo -> chan het, trong repo van hoat dong
+ * => PHAI gioi han CA BA tool theo duong dan. Deny chi la lop thu hai.
+ */
 const SENSITIVE_DENY = [
   'Bash',
   'Edit',
@@ -21,28 +30,34 @@ const SENSITIVE_DENY = [
   'WebSearch',
   'Task',
   'Read(**/.env*)',
-  'Read(./**/.env*)',
-  'Read(.env)',
+  'Grep(**/.env*)',
   'Read(**/credentials*)',
   'Read(**/*.p8)',
   'Read(**/*.p12)',
   'Read(**/*.pem)',
+  'Read(**/*.key)',
   'Read(**/*.keystore)',
   'Read(**/*.jks)',
   'Read(**/*.mobileprovision)',
   'Read(**/id_rsa*)',
-  'Read(~/.ssh/**)',
-  'Read(~/.aws/**)',
-  'Read(~/.claude/**)',
 ];
 
-const SETTINGS = JSON.stringify({
-  permissions: {
-    allow: READ_ONLY_TOOLS,
-    deny: SENSITIVE_DENY,
-  },
-  includeCoAuthoredBy: false,
-});
+/**
+ * @param {string} repoDir - thu muc duy nhat bot duoc doc
+ * @param {string[]} addDirs - thu muc tam chua anh dinh kem (chi Read)
+ */
+function buildSettings(repoDir, addDirs = []) {
+  const allow = [`Read(${repoDir}/**)`, `Grep(${repoDir}/**)`, `Glob(${repoDir}/**)`];
+  for (const dir of addDirs) if (dir) allow.push(`Read(${dir}/**)`);
+
+  return JSON.stringify({
+    permissions: {
+      allow,
+      deny: [...SENSITIVE_DENY, `Read(${repoDir}/.env*)`],
+    },
+    includeCoAuthoredBy: false,
+  });
+}
 
 export class ClaudeError extends Error {
   constructor(message, { code = 'CLAUDE_FAILED', stderr = '' } = {}) {
@@ -89,14 +104,14 @@ export async function askClaude({
   timeoutMs,
   oauthToken,
   addDirs = [],
+  noSessionPersistence = false,
 }) {
   const args = [
     '-p',
     '--output-format=json',
     `--model=${model}`,
     `--tools=${READ_ONLY_TOOLS.join(',')}`,
-    `--allowedTools=${READ_ONLY_TOOLS.join(',')}`,
-    `--settings=${SETTINGS}`,
+    `--settings=${buildSettings(cwd, addDirs)}`,
     '--setting-sources=user',
     '--disable-slash-commands',
   ];
@@ -105,6 +120,11 @@ export async function askClaude({
   for (const dir of addDirs) if (dir) args.push(`--add-dir=${dir}`);
   if (systemPrompt) args.push(`--append-system-prompt=${systemPrompt}`);
   if (sessionId) args.push(`--resume=${sessionId}`);
+
+  // Anh nguoi dung gui bi claude luu BASE64 vao transcript ~/.claude/projects va nam
+  // do vinh vien (da verify: transcript 670KB chua 2 chuoi base64 sau khi da xoa file tam).
+  // Screenshot cua QC co the chua du lieu nguoi dung that (CCCD, so dien thoai) => khong luu.
+  if (noSessionPersistence) args.push('--no-session-persistence');
 
   const started = Date.now();
 

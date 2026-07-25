@@ -7,7 +7,13 @@ import { askClaude, ClaudeError, killLiveChildren } from './claude.mjs';
 import { redact } from './redact.mjs';
 import { initLogger, log } from './logger.mjs';
 import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from './owner.mjs';
-import { buildAttachmentPromptBlock, cleanupAttachments, downloadImageAttachments } from './attachments.mjs';
+import {
+  buildAttachmentPromptBlock,
+  classifyAttachment,
+  cleanupAttachments,
+  downloadImageAttachments,
+  sweepStaleTempDirs,
+} from './attachments.mjs';
 import { replyAnswer } from './reply.mjs';
 
 /**
@@ -222,10 +228,14 @@ async function processJob(job) {
     attachmentBlock: buildAttachmentPromptBlock(attachments),
   });
 
+  // Co anh + bat ATTACHMENT_NO_PERSIST -> khong luu transcript (anh khong nam lai tren dia),
+  // doi lai cau hoi nay khong giu/khong tao ngu canh hoi thoai.
+  const noPersist = config.attachmentNoPersist && attachments.files.length > 0;
+
   const t0 = Date.now();
   try {
     let result;
-    const sessionId = getSession(sessionKey);
+    const sessionId = noPersist ? null : getSession(sessionKey);
     try {
       result = await askClaude({
         prompt,
@@ -237,6 +247,7 @@ async function processJob(job) {
         sessionId,
         timeoutMs: config.timeoutMs,
         addDirs: attachments.dir ? [attachments.dir] : [],
+        noSessionPersistence: noPersist,
       });
     } catch (err) {
       // Session cu khong resume duoc -> thu lai voi session moi
@@ -253,13 +264,15 @@ async function processJob(job) {
           sessionId: null,
           timeoutMs: config.timeoutMs,
           addDirs: attachments.dir ? [attachments.dir] : [],
+        noSessionPersistence: noPersist,
         });
       } else {
         throw err;
       }
     }
 
-    setSession(sessionKey, result.sessionId);
+    // noPersist: session khong duoc ghi ra dia -> luu id lai chi de --resume that bai sau nay
+    if (!noPersist) setSession(sessionKey, result.sessionId);
 
     // Lop redact van chay CA khi owner mode: owner duoc noi thong tin noi bo,
     // nhung secret thi khong gui qua Discord cho bat ky ai (xem src/owner.mjs).
@@ -336,8 +349,12 @@ if (config.allowDm) {
 
 const client = new Client({ intents, partials });
 
-client.once(Events.ClientReady, (c) => {
+client.once(Events.ClientReady, async (c) => {
   log.info(`da dang nhap Discord: ${c.user.tag}`, { botId: c.user.id });
+
+  // Don thu muc tam con sot tu lan chay truoc (bot bi kill giua luc tra loi)
+  const swept = await sweepStaleTempDirs();
+  if (swept) log.info(`da don ${swept} thu muc tam con sot tu lan chay truoc`);
   c.user.setPresence({
     activities: [{ name: config.presence, type: ActivityType.Playing }],
     status: 'online',
@@ -385,7 +402,11 @@ client.on(Events.MessageCreate, async (message) => {
       .replace(/\s+/g, ' ')
       .trim();
 
-    const hasImages = config.attachmentsEnabled && Boolean(message.attachments?.size);
+    // Phai kiem tra co ANH THAT khong: tin chi dinh kem PDF ma khong go chu thi
+    // khong duoc bia ra cau hoi "minh gui kem anh" (va mat luon HELP_TEXT)
+    const hasImages =
+      config.attachmentsEnabled &&
+      [...(message.attachments?.values() ?? [])].some((a) => classifyAttachment(a, config.attachmentMaxBytes).ok);
     const lower = question.toLowerCase();
 
     if (!question) {
