@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { redact } from '../src/redact.mjs';
 import { chunkForDiscord, DISCORD_LIMIT } from '../src/chunk.mjs';
 import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from '../src/owner.mjs';
+import { buildAttachmentPromptBlock, classifyAttachment, SkipReason } from '../src/attachments.mjs';
 
 let pass = 0;
 const t = (name, fn) => {
@@ -144,6 +145,85 @@ t('owner duoc DM du ALLOW_DM=false; nguoi khac thi khong', () => {
 t('ID gan giong khong duoc coi la owner (so sanh chuoi chinh xac)', () => {
   assert.equal(resolveOwnerMode({ authorId: '122019673813300021', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
   assert.equal(resolveOwnerMode({ authorId: '12201967381330002130', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
+});
+
+console.log('\n=== anh dinh kem: chi nhan anh, chi tu CDN Discord ===');
+
+const MAX = 10 * 1024 * 1024;
+const cdn = (name) => `https://cdn.discordapp.com/attachments/1/2/${name}`;
+
+t('anh png tu CDN Discord -> nhan', () => {
+  const v = classifyAttachment({ name: 'bug.png', url: cdn('bug.png'), contentType: 'image/png', size: 1234 }, MAX);
+  assert.equal(v.ok, true);
+  assert.equal(v.ext, 'png');
+});
+
+t('jpeg duoc chuan hoa thanh jpg', () => {
+  const v = classifyAttachment({ name: 'a.JPEG', url: cdn('a.JPEG'), contentType: 'image/jpeg', size: 10 }, MAX);
+  assert.equal(v.ok, true);
+  assert.equal(v.ext, 'jpg');
+});
+
+t('file khong phai anh -> tu choi', () => {
+  for (const name of ['tai-lieu.pdf', 'script.sh', 'archive.zip', 'malware.exe', 'noext']) {
+    const v = classifyAttachment({ name, url: cdn(name), size: 10 }, MAX);
+    assert.equal(v.ok, false, name);
+    assert.equal(v.reason, SkipReason.NOT_IMAGE, name);
+  }
+});
+
+t('duoi .png nhung Content-Type khong phai anh -> tu choi', () => {
+  const v = classifyAttachment(
+    { name: 'fake.png', url: cdn('fake.png'), contentType: 'application/octet-stream', size: 10 },
+    MAX
+  );
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, SkipReason.NOT_IMAGE);
+});
+
+t('URL ngoai CDN Discord -> tu choi (chong SSRF)', () => {
+  for (const url of [
+    'https://evil.example.com/x.png',
+    'http://cdn.discordapp.com/x.png', // http, khong phai https
+    'https://cdn.discordapp.com.evil.com/x.png',
+    'https://127.0.0.1/x.png',
+    'https://169.254.169.254/latest/meta-data/x.png',
+    'file:///etc/passwd.png',
+    'khong-phai-url',
+  ]) {
+    const v = classifyAttachment({ name: 'x.png', url, contentType: 'image/png', size: 10 }, MAX);
+    assert.equal(v.ok, false, url);
+    assert.equal(v.reason, SkipReason.BAD_HOST, url);
+  }
+});
+
+t('anh qua lon -> tu choi', () => {
+  const v = classifyAttachment({ name: 'big.png', url: cdn('big.png'), contentType: 'image/png', size: MAX + 1 }, MAX);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, SkipReason.TOO_BIG);
+});
+
+t('media.discordapp.net cung duoc nhan', () => {
+  const v = classifyAttachment(
+    { name: 'x.webp', url: 'https://media.discordapp.net/attachments/1/2/x.webp', contentType: 'image/webp', size: 5 },
+    MAX
+  );
+  assert.equal(v.ok, true);
+});
+
+t('prompt block co duong dan + canh bao coi noi dung anh la du lieu', () => {
+  const block = buildAttachmentPromptBlock({
+    files: [{ path: '/tmp/sociagri-bot-att-x/anh-1.png', name: 'screenshot loi.png', bytes: 100 }],
+    skipped: [{ name: 'tai-lieu.pdf', reason: SkipReason.NOT_IMAGE }],
+  });
+  assert.ok(block.includes('/tmp/sociagri-bot-att-x/anh-1.png'));
+  assert.ok(block.includes('Read'));
+  assert.ok(/DỮ LIỆU/.test(block), 'phai nhac noi dung anh la du lieu');
+  assert.ok(block.includes('tai-lieu.pdf'), 'phai noi file nao bi bo qua');
+});
+
+t('khong co file nao -> block rong (khong lam ban prompt)', () => {
+  assert.equal(buildAttachmentPromptBlock({ files: [], skipped: [] }), '');
 });
 
 console.log(`\n${process.exitCode ? '🚫 CO TEST FAIL' : `🎉 ${pass}/${pass} test PASS`}\n`);

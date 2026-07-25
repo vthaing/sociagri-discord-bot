@@ -8,6 +8,7 @@ import { chunkForDiscord, DISCORD_LIMIT } from './chunk.mjs';
 import { redact } from './redact.mjs';
 import { initLogger, log } from './logger.mjs';
 import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from './owner.mjs';
+import { buildAttachmentPromptBlock, cleanupAttachments, downloadImageAttachments } from './attachments.mjs';
 
 /**
  * Exit code co y nghia voi launchd (plist dung KeepAlive.SuccessfulExit=false):
@@ -144,7 +145,7 @@ async function replyLong(message, text) {
   }
 }
 
-function buildPrompt({ question, authorName, authorId, channelName, guildName }) {
+function buildPrompt({ question, authorName, authorId, channelName, guildName, attachmentBlock }) {
   return [
     'Một người trong Discord vừa hỏi bạn về dự án SociAgri. Hãy trả lời họ.',
     '',
@@ -154,6 +155,7 @@ function buildPrompt({ question, authorName, authorId, channelName, guildName })
     `<discord_question author="${authorName}" author_id="${authorId}" channel="${channelName}" server="${guildName}">`,
     question,
     '</discord_question>',
+    attachmentBlock || '',
     '',
     'Trả lời bằng tiếng Việt, ngắn gọn (3–8 câu), dùng markdown nhẹ. Nếu cần thì tra repo trước khi trả lời.',
   ].join('\n');
@@ -182,6 +184,7 @@ const HELP_TEXT = [
   '',
   '• Cứ @mention mình kèm câu hỏi, hoặc reply vào tin của mình.',
   '• Mình đọc được code + tài liệu trong repo nên trả lời được cả câu hỏi kỹ thuật.',
+  '• Gửi kèm **ảnh/screenshot** được — mình xem ảnh rồi đối chiếu code để trả lời.',
   '• Gõ `reset` (kèm mention) để mình quên ngữ cảnh cuộc trò chuyện trong channel này.',
   '• Việc cần *quyết định* (deadline, giá, nhân sự, tiền) thì mình không tự quyết — đợi Vince nhé.',
 ].join('\n');
@@ -207,12 +210,29 @@ async function processJob(job) {
   }, 8_000);
   message.channel.sendTyping().catch(() => {});
 
+  // Anh dinh kem -> tai ve thu muc tam, chen duong dan vao prompt de claude Read duoc
+  let attachments = { dir: null, files: [], skipped: [] };
+  if (config.attachmentsEnabled && message.attachments?.size) {
+    attachments = await downloadImageAttachments([...message.attachments.values()], {
+      maxCount: config.attachmentMaxCount,
+      maxBytes: config.attachmentMaxBytes,
+    });
+    log.info('anh dinh kem', {
+      channelId,
+      userId: message.author.id,
+      taiVe: attachments.files.length,
+      boQua: attachments.skipped.length ? attachments.skipped.map((s) => s.reason) : undefined,
+      bytes: attachments.files.reduce((n, f) => n + f.bytes, 0) || undefined,
+    });
+  }
+
   const prompt = buildPrompt({
     question,
     authorName: message.author.username,
     authorId: message.author.id,
     channelName: message.channel?.name || 'dm',
     guildName: message.guild?.name || 'dm',
+    attachmentBlock: buildAttachmentPromptBlock(attachments),
   });
 
   const t0 = Date.now();
@@ -229,6 +249,7 @@ async function processJob(job) {
         systemPrompt: effectiveSystemPrompt,
         sessionId,
         timeoutMs: config.timeoutMs,
+        addDirs: attachments.dir ? [attachments.dir] : [],
       });
     } catch (err) {
       // Session cu khong resume duoc -> thu lai voi session moi
@@ -244,6 +265,7 @@ async function processJob(job) {
           systemPrompt: effectiveSystemPrompt,
           sessionId: null,
           timeoutMs: config.timeoutMs,
+          addDirs: attachments.dir ? [attachments.dir] : [],
         });
       } else {
         throw err;
@@ -294,6 +316,8 @@ async function processJob(job) {
     await message.reply({ content: userMsg, allowedMentions: { repliedUser: true, parse: [] } }).catch(() => {});
   } finally {
     clearInterval(typing);
+    // Xoa anh tam NGAY sau khi tra loi — khong de anh nguoi dung nam lai tren dia
+    await cleanupAttachments(attachments.dir);
   }
 }
 
@@ -366,16 +390,22 @@ client.on(Events.MessageCreate, async (message) => {
       if (!repliedToBot) return;
     }
 
-    const question = message.content
+    let question = message.content
       .replace(new RegExp(`<@!?${client.user.id}>`, 'g'), ' ')
       .replace(/\s+/g, ' ')
       .trim();
 
+    const hasImages = config.attachmentsEnabled && Boolean(message.attachments?.size);
     const lower = question.toLowerCase();
 
     if (!question) {
-      await message.reply({ content: HELP_TEXT, allowedMentions: { repliedUser: true, parse: [] } });
-      return;
+      // Chi mention + gui anh, khong go chu -> xu ly anh, DUNG tra ve huong dan
+      if (hasImages) {
+        question = 'Mình gửi kèm ảnh — bạn xem giúp mình rồi cho biết bạn thấy gì / xử lý thế nào nhé.';
+      } else {
+        await message.reply({ content: HELP_TEXT, allowedMentions: { repliedUser: true, parse: [] } });
+        return;
+      }
     }
     if (['help', 'trợ giúp', 'tro giup', '?'].includes(lower)) {
       await message.reply({ content: HELP_TEXT, allowedMentions: { repliedUser: true, parse: [] } });

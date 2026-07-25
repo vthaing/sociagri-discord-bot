@@ -79,7 +79,17 @@ export function killLiveChildren() {
  * @param {number} opts.timeoutMs
  * @returns {Promise<{ text: string, sessionId: string|null, durationMs: number, costUsd: number|null }>}
  */
-export async function askClaude({ prompt, cwd, claudeBin, model, systemPrompt, sessionId, timeoutMs, oauthToken }) {
+export async function askClaude({
+  prompt,
+  cwd,
+  claudeBin,
+  model,
+  systemPrompt,
+  sessionId,
+  timeoutMs,
+  oauthToken,
+  addDirs = [],
+}) {
   const args = [
     '-p',
     '--output-format=json',
@@ -90,6 +100,9 @@ export async function askClaude({ prompt, cwd, claudeBin, model, systemPrompt, s
     '--setting-sources=user',
     '--disable-slash-commands',
   ];
+
+  // Thu muc tam chua anh dinh kem: `claude` chi doc duoc file ngoai cwd khi duoc --add-dir
+  for (const dir of addDirs) if (dir) args.push(`--add-dir=${dir}`);
   if (systemPrompt) args.push(`--append-system-prompt=${systemPrompt}`);
   if (sessionId) args.push(`--resume=${sessionId}`);
 

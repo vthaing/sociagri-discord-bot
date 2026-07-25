@@ -44,6 +44,11 @@ export const config = {
   userCooldownMs: num(process.env.USER_COOLDOWN_MS, 10_000),
   userHourlyLimit: num(process.env.USER_HOURLY_LIMIT, 30),
 
+  // Anh dinh kem: tai ve thu muc tam de claude doc bang tool Read, xoa sau khi tra loi
+  attachmentsEnabled: bool(process.env.ATTACHMENTS_ENABLED, true),
+  attachmentMaxCount: num(process.env.ATTACHMENT_MAX_COUNT, 4),
+  attachmentMaxBytes: num(process.env.ATTACHMENT_MAX_BYTES, 10 * 1024 * 1024),
+
   systemPromptFile: process.env.SYSTEM_PROMPT_FILE || 'system-prompt.md',
   logFile: process.env.LOG_FILE || 'logs/bot.log',
   presence: process.env.PRESENCE_TEXT || 'tra loi ho Vince ve SociAgri',
