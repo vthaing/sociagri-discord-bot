@@ -1,0 +1,20 @@
+{
+  "name": "sociagri-discord-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord bot tra loi ho ve du an SociAgri, dung Claude Code CLI local (khong can Anthropic API key)",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/bot.mjs",
+    "check": "node --env-file-if-exists=.env src/preflight.mjs",
+    "invite": "node --env-file-if-exists=.env scripts/discord-info.mjs",
+    "ask": "node --env-file-if-exists=.env scripts/ask-once.mjs",
+    "test": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
