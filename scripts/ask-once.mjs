@@ -13,9 +13,12 @@ import { config } from '../src/config.mjs';
 import { askClaude } from '../src/claude.mjs';
 import { redact } from '../src/redact.mjs';
 
-const question = process.argv.slice(2).join(' ').trim();
+const argv = process.argv.slice(2);
+const asOwner = argv.includes('--owner'); // mo phong owner (chu du an) hoi trong DM
+const question = argv.filter((a) => a !== '--owner').join(' ').trim();
+
 if (!question) {
-  console.error('Dung: npm run ask -- "cau hoi"');
+  console.error('Dung: npm run ask -- [--owner] "cau hoi"');
   process.exit(1);
 }
 
@@ -23,6 +26,14 @@ let systemPrompt = '';
 try {
   systemPrompt = fs.readFileSync(path.resolve(config.systemPromptFile), 'utf8');
 } catch {}
+
+if (asOwner) {
+  try {
+    systemPrompt += '\n\n---\n\n' + fs.readFileSync(path.resolve(config.ownerPromptFile), 'utf8');
+  } catch {
+    console.error(`⚠️  khong doc duoc ${config.ownerPromptFile} — chay nhu nguoi thuong`);
+  }
+}
 
 // Boc y HET nhu bot.mjs lam, de test dung dieu kien that
 const prompt = [
@@ -38,7 +49,7 @@ const prompt = [
   'Trả lời bằng tiếng Việt, ngắn gọn (3–8 câu), dùng markdown nhẹ. Nếu cần thì tra repo trước khi trả lời.',
 ].join('\n');
 
-console.log(`\n❓ ${question}\n${'─'.repeat(70)}`);
+console.log(`\n❓ ${question}${asOwner ? '   [owner mode]' : ''}\n${'─'.repeat(70)}`);
 
 try {
   const res = await askClaude({

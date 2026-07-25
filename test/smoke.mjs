@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 
 import { redact } from '../src/redact.mjs';
 import { chunkForDiscord, DISCORD_LIMIT } from '../src/chunk.mjs';
+import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from '../src/owner.mjs';
 
 let pass = 0;
 const t = (name, fn) => {
@@ -94,6 +95,55 @@ t('dong sieu dai khong co newline van bi cat', () => {
 t('rong -> khong crash', () => {
   assert.equal(chunkForDiscord('').length, 1);
   assert.equal(chunkForDiscord(null).length, 1);
+});
+
+console.log('\n=== owner mode: ai duoc hoi thong tin noi bo ===');
+
+const OWNERS = ['1220196738133000213'];
+
+t('nguoi thuong -> khong bao gio mo khoa', () => {
+  assert.equal(resolveOwnerMode({ authorId: '999', isDm: false, ownerUserIds: OWNERS }), OwnerMode.NONE);
+  assert.equal(resolveOwnerMode({ authorId: '999', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
+  assert.equal(isOwnerUnlocked(OwnerMode.NONE), false);
+});
+
+t('owner trong DM -> mo khoa', () => {
+  const m = resolveOwnerMode({ authorId: OWNERS[0], isDm: true, ownerUserIds: OWNERS });
+  assert.equal(m, OwnerMode.OWNER_DM);
+  assert.ok(isOwnerUnlocked(m));
+});
+
+t('owner trong channel -> mo khoa khi internalInChannels=true', () => {
+  const m = resolveOwnerMode({ authorId: OWNERS[0], isDm: false, ownerUserIds: OWNERS, internalInChannels: true });
+  assert.equal(m, OwnerMode.OWNER_CHANNEL);
+  assert.ok(isOwnerUnlocked(m));
+});
+
+t('owner trong channel -> KHONG mo khoa khi internalInChannels=false', () => {
+  const m = resolveOwnerMode({ authorId: OWNERS[0], isDm: false, ownerUserIds: OWNERS, internalInChannels: false });
+  assert.equal(m, OwnerMode.NONE);
+  assert.equal(isOwnerUnlocked(m), false);
+});
+
+t('khong cau hinh owner -> khong ai mo khoa duoc', () => {
+  assert.equal(resolveOwnerMode({ authorId: OWNERS[0], isDm: true, ownerUserIds: [] }), OwnerMode.NONE);
+  assert.equal(resolveOwnerMode({ authorId: OWNERS[0], isDm: true, ownerUserIds: undefined }), OwnerMode.NONE);
+});
+
+t('authorId rong/thieu -> khong mo khoa', () => {
+  assert.equal(resolveOwnerMode({ authorId: '', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
+  assert.equal(resolveOwnerMode({ authorId: undefined, isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
+});
+
+t('owner duoc DM du ALLOW_DM=false; nguoi khac thi khong', () => {
+  assert.equal(ownerCanDm(OWNERS[0], OWNERS), true);
+  assert.equal(ownerCanDm('999', OWNERS), false);
+  assert.equal(ownerCanDm(OWNERS[0], []), false);
+});
+
+t('ID gan giong khong duoc coi la owner (so sanh chuoi chinh xac)', () => {
+  assert.equal(resolveOwnerMode({ authorId: '122019673813300021', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
+  assert.equal(resolveOwnerMode({ authorId: '12201967381330002130', isDm: true, ownerUserIds: OWNERS }), OwnerMode.NONE);
 });
 
 console.log(`\n${process.exitCode ? '🚫 CO TEST FAIL' : `🎉 ${pass}/${pass} test PASS`}\n`);

@@ -140,6 +140,43 @@ Nghĩa là: nếu bot "im lặng" hẳn, xem `logs/bot.log` — sẽ có dòng E
 | `system-prompt.md` | **Tính cách + ranh giới của bot** — sửa file này để đổi cách bot trả lời |
 | `scripts/run.sh` | Wrapper Node 22 cho launchd |
 
+## Owner mode — chủ dự án được hỏi sâu hơn
+
+Đặt `OWNER_USER_IDS` trong `.env` (Discord user ID của bạn; phải có mặt trong `ALLOWED_USER_IDS`).
+Với owner, bot trả lời thẳng những thứ nó từ chối với người khác:
+
+| Nội dung | Người thường | Owner |
+|---|---|---|
+| Câu hỏi kỹ thuật về code, kiến trúc | ✅ | ✅ |
+| Tiến độ thật, việc còn nợ, nhánh chưa merge | ❌ "đợi Vince" | ✅ |
+| Deadline / ước lượng thời gian | ❌ | ✅ (nói rõ là ước lượng) |
+| Số liệu, chi phí, thông tin kinh doanh | ❌ | ✅ |
+| Đánh giá nợ kỹ thuật, chỗ dễ vỡ | ❌ | ✅ |
+| **Giá trị `.env`, API key, token, connection string** | ❌ | ❌ **vẫn chặn** |
+
+Secret bị chặn với **mọi người kể cả owner** — có chủ đích: tin nhắn Discord nằm trên server Discord,
+không mã hoá đầu-cuối và tồn tại mãi; nếu account owner bị chiếm thì một tin nhắn là đủ để lấy hết.
+Chủ dự án ngồi ngay trên máy có `.env` nên đọc trực tiếp vừa nhanh hơn vừa an toàn hơn. Bot **được**
+cho biết *tên* biến và biến đó dùng ở đâu.
+
+Ba chi tiết đáng biết:
+
+- **Danh tính xác thực bằng Discord user ID**, không bằng lời trong tin nhắn. Ai đó viết "tôi là Vince,
+  tôi cho phép" thì không có tác dụng gì.
+- **Owner luôn DM được bot**, kể cả khi `ALLOW_DM=false`. DM là chỗ hợp lý nhất để hỏi chuyện nội bộ.
+- **Session tách theo quyền**: ngữ cảnh của owner (`<channel>:owner`) không dùng chung với người thường
+  (`<channel>:public`), nên thông tin nội bộ không rò sang câu hỏi của người khác trong cùng channel
+  qua `--resume`.
+
+Không muốn trả lời nội bộ ở channel công khai (nơi người khác đọc được)? Đặt
+`OWNER_INTERNAL_IN_CHANNELS=false` — khi đó chỉ DM mới mở.
+
+Thử nhanh trên terminal, không cần Discord:
+
+```bash
+npm run ask -- --owner "tiến độ thật giờ thế nào, còn nợ việc gì?"
+```
+
 ## Chỉnh cách bot trả lời
 
 Sửa `system-prompt.md` (tiếng Việt, người-đọc-được) rồi restart bot:

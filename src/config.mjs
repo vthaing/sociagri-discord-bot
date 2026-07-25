@@ -21,6 +21,13 @@ export const config = {
   allowedGuildIds: list(process.env.ALLOWED_GUILD_IDS), // rong = moi server
   allowDm: bool(process.env.ALLOW_DM, false),
 
+  // Owner = chu du an: duoc hoi thong tin NOI BO (tien do that, deadline, so lieu,
+  // chi phi, kinh doanh). KHONG bao gom secret — xem src/owner.mjs.
+  // Owner luon DM duoc bot du ALLOW_DM=false.
+  ownerUserIds: list(process.env.OWNER_USER_IDS),
+  ownerInternalInChannels: bool(process.env.OWNER_INTERNAL_IN_CHANNELS, true),
+  ownerPromptFile: process.env.OWNER_PROMPT_FILE || 'system-prompt-owner.md',
+
   repoDir: process.env.REPO_DIR || '/Users/vthaing/WORKING_AREA/PROJECTS/sociagri',
   claudeBin: process.env.CLAUDE_BIN || 'claude',
   // Token subscription tu `claude setup-token` (KHONG phai Anthropic API key tra phi).
@@ -72,6 +79,24 @@ export function validateConfig() {
         `ALLOWED_USER_IDS co gia tri khong phai user ID: ${badIds.join(', ')}` +
           ' — user ID la day 15-25 chu so (bat Developer Mode → click phai vao nguoi → Copy User ID), KHONG phai username.'
       );
+  }
+
+  if (config.ownerUserIds.length) {
+    const badOwners = config.ownerUserIds.filter((id) => !/^\d{15,25}$/.test(id));
+    if (badOwners.length) errors.push(`OWNER_USER_IDS co gia tri khong phai user ID: ${badOwners.join(', ')}`);
+
+    // Owner khong nam trong whitelist thi bot khong tra loi ho gi ca -> owner mode vo nghia
+    const notWhitelisted = config.ownerUserIds.filter(
+      (id) => /^\d{15,25}$/.test(id) && !config.allowedUserIds.includes(id)
+    );
+    if (notWhitelisted.length)
+      errors.push(
+        `OWNER_USER_IDS co ID khong nam trong ALLOWED_USER_IDS: ${notWhitelisted.join(', ')}` +
+          ' — bot se khong tra loi ho gi ca. Them ID nay vao ALLOWED_USER_IDS.'
+      );
+
+    if (!existsSync(path.resolve(config.ownerPromptFile)))
+      warnings.push(`Khong thay ${config.ownerPromptFile} — owner mode se khong co huong dan rieng`);
   }
 
   if (config.claudeOauthToken && !config.claudeOauthToken.startsWith('sk-ant-oat01-'))

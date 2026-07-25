@@ -7,6 +7,7 @@ import { askClaude, ClaudeError, killLiveChildren } from './claude.mjs';
 import { chunkForDiscord, DISCORD_LIMIT } from './chunk.mjs';
 import { redact } from './redact.mjs';
 import { initLogger, log } from './logger.mjs';
+import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from './owner.mjs';
 
 /**
  * Exit code co y nghia voi launchd (plist dung KeepAlive.SuccessfulExit=false):
@@ -44,6 +45,16 @@ try {
   log.warn(`Khong doc duoc ${config.systemPromptFile} — chay khong co system prompt rieng`);
 }
 
+// Huong dan bo sung, CHI append khi nguoi hoi la owner (xem src/owner.mjs)
+let ownerPrompt = '';
+if (config.ownerUserIds.length) {
+  try {
+    ownerPrompt = fs.readFileSync(path.resolve(config.ownerPromptFile), 'utf8');
+  } catch {
+    log.warn(`Khong doc duoc ${config.ownerPromptFile} — owner se duoc doi xu nhu nguoi thuong`);
+  }
+}
+
 log.info('startup:config', {
   repoDir: config.repoDir,
   claudeBin: config.claudeBin,
@@ -54,12 +65,22 @@ log.info('startup:config', {
   allowDm: config.allowDm,
   timeoutMs: config.timeoutMs,
   systemPromptChars: systemPrompt.length,
+  owners: config.ownerUserIds.length,
+  ownerPromptChars: ownerPrompt.length,
+  ownerInternalInChannels: config.ownerInternalInChannels,
   tokenPresent: Boolean(config.discordToken),
 });
 
 // ---------------------------------------------------------------- state
 
-/** channelId -> { sessionId, ts } */
+/**
+ * sessionKey -> { sessionId, ts }
+ *
+ * Key = `${channelId}:owner` hoac `${channelId}:public`.
+ * PHAI tach theo quyen: neu dung chung session theo channel, ngu canh owner
+ * (system prompt noi bo + cau tra loi noi bo trong lich su) se RO sang nguoi
+ * thuong hoi tiep trong cung channel qua `--resume`.
+ */
 const sessions = new Map();
 /** userId -> number[] (timestamps) */
 const userHits = new Map();
@@ -67,19 +88,28 @@ const userHits = new Map();
 const queue = [];
 let running = false;
 
-function getSession(channelId) {
-  const entry = sessions.get(channelId);
+function sessionKeyFor(channelId, ownerUnlocked) {
+  return `${channelId}:${ownerUnlocked ? 'owner' : 'public'}`;
+}
+
+function getSession(key) {
+  const entry = sessions.get(key);
   if (!entry) return null;
   if (Date.now() - entry.ts > config.sessionTtlMs) {
-    sessions.delete(channelId);
+    sessions.delete(key);
     return null;
   }
   return entry.sessionId;
 }
 
-function setSession(channelId, sessionId) {
+function setSession(key, sessionId) {
   if (!sessionId) return;
-  sessions.set(channelId, { sessionId, ts: Date.now() });
+  sessions.set(key, { sessionId, ts: Date.now() });
+}
+
+function clearChannelSessions(channelId) {
+  sessions.delete(sessionKeyFor(channelId, true));
+  sessions.delete(sessionKeyFor(channelId, false));
 }
 
 function checkRate(userId) {
@@ -140,7 +170,8 @@ function isAllowed(message) {
     if (config.allowedChannelIds.length && !config.allowedChannelIds.includes(message.channel.id)) {
       return { ok: false, silent: true, why: 'channel_not_whitelisted' };
     }
-  } else if (!config.allowDm) {
+  } else if (!config.allowDm && !ownerCanDm(message.author.id, config.ownerUserIds)) {
+    // Owner luon DM duoc bot: DM rieng la cho hop ly nhat de hoi thong tin noi bo
     return { ok: false, silent: true, why: 'dm_disabled' };
   }
   return { ok: true };
@@ -161,6 +192,16 @@ async function processJob(job) {
   const { message, question } = job;
   const channelId = message.channel.id;
 
+  const ownerMode = resolveOwnerMode({
+    authorId: message.author.id,
+    isDm: !message.guild,
+    ownerUserIds: config.ownerUserIds,
+    internalInChannels: config.ownerInternalInChannels,
+  });
+  const ownerUnlocked = isOwnerUnlocked(ownerMode) && Boolean(ownerPrompt);
+  const effectiveSystemPrompt = ownerUnlocked ? `${systemPrompt}\n\n---\n\n${ownerPrompt}` : systemPrompt;
+  const sessionKey = sessionKeyFor(channelId, ownerUnlocked);
+
   const typing = setInterval(() => {
     message.channel.sendTyping().catch(() => {});
   }, 8_000);
@@ -177,7 +218,7 @@ async function processJob(job) {
   const t0 = Date.now();
   try {
     let result;
-    const sessionId = getSession(channelId);
+    const sessionId = getSession(sessionKey);
     try {
       result = await askClaude({
         prompt,
@@ -185,21 +226,22 @@ async function processJob(job) {
         claudeBin: config.claudeBin,
         model: config.model,
         oauthToken: config.claudeOauthToken,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         sessionId,
         timeoutMs: config.timeoutMs,
       });
     } catch (err) {
       // Session cu khong resume duoc -> thu lai voi session moi
       if (sessionId && err instanceof ClaudeError && err.code !== 'TIMEOUT' && err.code !== 'NOT_LOGGED_IN') {
-        log.warn('resume that bai — thu session moi', { channelId, code: err.code });
-        sessions.delete(channelId);
+        log.warn('resume that bai — thu session moi', { sessionKey, code: err.code });
+        sessions.delete(sessionKey);
         result = await askClaude({
           prompt,
           cwd: config.repoDir,
           claudeBin: config.claudeBin,
           model: config.model,
-          systemPrompt,
+          oauthToken: config.claudeOauthToken,
+          systemPrompt: effectiveSystemPrompt,
           sessionId: null,
           timeoutMs: config.timeoutMs,
         });
@@ -208,10 +250,12 @@ async function processJob(job) {
       }
     }
 
-    setSession(channelId, result.sessionId);
+    setSession(sessionKey, result.sessionId);
 
+    // Lop redact van chay CA khi owner mode: owner duoc noi thong tin noi bo,
+    // nhung secret thi khong gui qua Discord cho bat ky ai (xem src/owner.mjs).
     const { text, hits } = redact(result.text);
-    if (hits.length) log.warn('da an du lieu nhay cam trong cau tra loi', { hits, channelId });
+    if (hits.length) log.warn('da an du lieu nhay cam trong cau tra loi', { hits, channelId, ownerMode });
 
     await replyLong(message, text);
 
@@ -220,6 +264,7 @@ async function processJob(job) {
       user: message.author.username,
       channelId,
       channel: message.channel?.name || 'dm',
+      ownerMode: ownerMode === OwnerMode.NONE ? undefined : ownerMode,
       qChars: question.length,
       aChars: text.length,
       claudeMs: result.durationMs,
@@ -337,7 +382,7 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
     if (['reset', 'quên đi', 'quen di', 'clear', 'new'].includes(lower)) {
-      sessions.delete(message.channel.id);
+      clearChannelSessions(message.channel.id);
       await message.reply({
         content: '🧹 Xong, mình đã quên ngữ cảnh trò chuyện trong channel này.',
         allowedMentions: { repliedUser: true, parse: [] },
