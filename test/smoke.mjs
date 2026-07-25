@@ -3,11 +3,13 @@
  * Kiem tra 2 thu de sai va hau qua nang: an secret + cat tin nhan.
  */
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
 import { redact } from '../src/redact.mjs';
 import { chunkForDiscord, DISCORD_LIMIT } from '../src/chunk.mjs';
 import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from '../src/owner.mjs';
 import { buildAttachmentPromptBlock, classifyAttachment, SkipReason } from '../src/attachments.mjs';
+import { OutboundSkip, parseAttachRequests, shouldSendAsFile, validateOutboundFile } from '../src/outbound.mjs';
 
 let pass = 0;
 const t = (name, fn) => {
@@ -224,6 +226,203 @@ t('prompt block co duong dan + canh bao coi noi dung anh la du lieu', () => {
 
 t('khong co file nao -> block rong (khong lam ban prompt)', () => {
   assert.equal(buildAttachmentPromptBlock({ files: [], skipped: [] }), '');
+});
+
+console.log('\n=== gui file len Discord: kiem duyet truoc khi gui ===');
+
+// Dung CHINH repo bot lam repoDir de test tren file that
+const REPO = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
+const LIMITS = { repoDir: REPO, maxBytes: 8 * 1024 * 1024 };
+
+/** nhu t() nhung await duoc fn async */
+const ta = async (name, fn) => {
+  try {
+    await fn();
+    console.log(`  ✅ ${name}`);
+    pass++;
+  } catch (err) {
+    console.error(`  ❌ ${name}\n     ${err.message}`);
+    process.exitCode = 1;
+  }
+};
+
+await ta('tach cu phap [[attach: ...]] khoi cau tra loi', () => {
+  const { text, paths } = parseAttachRequests(
+    'Đây là file bạn cần:\n[[attach: /tmp/a.md]]\nCòn cái nữa:\n  [[attach: docs/b.png]]  \nHết.'
+  );
+  assert.deepEqual(paths, ['/tmp/a.md', 'docs/b.png']);
+  assert.ok(!text.includes('[[attach'), text);
+  assert.ok(text.includes('Đây là file bạn cần'));
+  assert.ok(text.includes('Hết.'));
+});
+
+await ta('khong co cu phap -> giu nguyen van ban', () => {
+  const src = 'Bình thường thôi, không đính kèm gì.';
+  const { text, paths } = parseAttachRequests(src);
+  assert.equal(text, src);
+  assert.equal(paths.length, 0);
+});
+
+await ta('[[attach]] giua dong KHONG duoc coi la yeu cau (tranh an oan trong code block)', () => {
+  const { paths } = parseAttachRequests('cú pháp là [[attach: path]] nhé, viết trên dòng riêng');
+  assert.equal(paths.length, 0);
+});
+
+await ta('file .env trong repo -> TU CHOI (day la test quan trong nhat)', async () => {
+  const v = await validateOutboundFile('.env', LIMITS);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, OutboundSkip.DENIED_NAME);
+});
+
+await ta('cac loai secret khac -> TU CHOI theo ten', async () => {
+  for (const name of ['.env.local', 'AuthKey_ABC.p8', 'release.keystore', 'server.pem', 'credentials.json', 'id_rsa']) {
+    const v = await validateOutboundFile(name, LIMITS);
+    assert.equal(v.ok, false, name);
+    assert.equal(v.reason, OutboundSkip.DENIED_NAME, `${name} -> ${v.reason}`);
+  }
+});
+
+await ta('file nguon binh thuong -> cho gui, danh dau la van ban', async () => {
+  const v = await validateOutboundFile('src/bot.mjs', LIMITS);
+  assert.equal(v.ok, true, v.reason);
+  assert.equal(v.isText, true);
+  assert.equal(v.name, 'bot.mjs');
+  assert.ok(v.bytes > 0);
+});
+
+await ta('file ngoai repo -> TU CHOI', async () => {
+  for (const p of ['/etc/passwd', '/etc/hosts', '../../../etc/passwd']) {
+    const v = await validateOutboundFile(p, LIMITS);
+    assert.equal(v.ok, false, p);
+    assert.ok([OutboundSkip.OUTSIDE_REPO, OutboundSkip.NOT_FOUND].includes(v.reason), `${p} -> ${v.reason}`);
+  }
+});
+
+await ta('file trong node_modules / .git -> TU CHOI', async () => {
+  const v = await validateOutboundFile('node_modules/discord.js/package.json', LIMITS);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, OutboundSkip.DENIED_DIR);
+});
+
+await ta('file khong ton tai -> TU CHOI', async () => {
+  const v = await validateOutboundFile('khong-he-co-file-nay.md', LIMITS);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, OutboundSkip.NOT_FOUND);
+});
+
+await ta('thu muc -> TU CHOI (khong phai file)', async () => {
+  const v = await validateOutboundFile('src', LIMITS);
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, OutboundSkip.NOT_A_FILE);
+});
+
+await ta('file vuot dung luong -> TU CHOI', async () => {
+  const v = await validateOutboundFile('src/bot.mjs', { repoDir: REPO, maxBytes: 10 });
+  assert.equal(v.ok, false);
+  assert.equal(v.reason, OutboundSkip.TOO_BIG);
+});
+
+await ta('cau tra loi dai -> gui thanh file; ngan -> gui trong chat', () => {
+  assert.equal(shouldSendAsFile('x'.repeat(3600), { maxInlineChars: 3500 }), true);
+  assert.equal(shouldSendAsFile('ngắn gọn', { maxInlineChars: 3500 }), false);
+  assert.equal(shouldSendAsFile('', { maxInlineChars: 3500 }), false);
+});
+
+console.log('\n=== replyAnswer: wiring that (mock message, khong can Discord) ===');
+
+const { replyAnswer } = await import('../src/reply.mjs');
+
+const OUT_CONFIG = {
+  outboundFilesEnabled: true,
+  outboundMaxInlineChars: 3500,
+  outboundMaxFileBytes: 8 * 1024 * 1024,
+  outboundMaxFiles: 3,
+  repoDir: REPO,
+};
+
+function mockMessage() {
+  const sent = [];
+  return {
+    sent,
+    reply: async (payload) => sent.push({ kind: 'reply', ...payload }),
+    channel: { send: async (payload) => sent.push({ kind: 'send', ...payload }) },
+  };
+}
+
+await ta('cau tra loi ngan -> 1 tin, khong file', async () => {
+  const m = mockMessage();
+  const r = await replyAnswer(m, 'Ngắn gọn thôi.', { question: 'hỏi gì đó', config: OUT_CONFIG });
+  assert.equal(r.sentAsFile, false);
+  assert.equal(m.sent.length, 1);
+  assert.equal(m.sent[0].files, undefined);
+  assert.equal(m.sent[0].content, 'Ngắn gọn thôi.');
+});
+
+await ta('cau tra loi DAI -> 1 tin + file .md (khong cat vun)', async () => {
+  const m = mockMessage();
+  const long = Array.from({ length: 200 }, (_, i) => `Dòng ${i} nói về ví tiền và marketplace.`).join('\n');
+  const r = await replyAnswer(m, long, { question: 'giải thích ví tiền', config: OUT_CONFIG });
+
+  assert.equal(r.sentAsFile, true);
+  assert.equal(m.sent.length, 1, `phai gui 1 tin, khong phai ${m.sent.length}`);
+  assert.equal(m.sent[0].files.length, 1);
+  assert.ok(/^tra-loi-.*\.md$/.test(m.sent[0].files[0].name), m.sent[0].files[0].name);
+  assert.ok(m.sent[0].content.length <= 2000, 'tin nhan phai trong gioi han Discord');
+  assert.ok(m.sent[0].content.includes('gửi kèm đầy đủ trong file'));
+
+  // File phai chua TOAN BO cau tra loi + cau hoi o header
+  const body = m.sent[0].files[0].attachment.toString('utf8');
+  assert.ok(body.includes('Dòng 0 '), 'thieu dau');
+  assert.ok(body.includes('Dòng 199 '), 'thieu cuoi');
+  assert.ok(body.includes('giải thích ví tiền'), 'thieu cau hoi o header');
+});
+
+await ta('[[attach: file nguon]] -> dinh kem file that', async () => {
+  const m = mockMessage();
+  const r = await replyAnswer(m, 'File bạn cần đây:\n[[attach: src/owner.mjs]]', {
+    question: 'gửi file owner',
+    config: OUT_CONFIG,
+  });
+  assert.equal(r.rejected.length, 0);
+  assert.equal(r.attached.length, 1);
+  assert.equal(r.attached[0].name, 'owner.mjs');
+  const last = m.sent[m.sent.length - 1];
+  assert.equal(last.files.length, 1);
+  assert.ok(last.files[0].attachment.toString('utf8').includes('resolveOwnerMode'));
+  assert.ok(!last.content.includes('[[attach'), 'cu phap phai bi tach khoi tin nhan');
+});
+
+await ta('[[attach: .env]] -> TU CHOI + noi ly do cho nguoi hoi', async () => {
+  const m = mockMessage();
+  const r = await replyAnswer(m, 'Đây file config:\n[[attach: .env]]', { question: 'gửi .env', config: OUT_CONFIG });
+  assert.equal(r.attached.length, 0);
+  assert.equal(r.rejected.length, 1);
+  const all = m.sent.map((s) => s.content).join('\n');
+  assert.ok(/Không gửi được/.test(all), all);
+  assert.ok(/secret|key|credentials/i.test(all), all);
+  for (const s of m.sent) assert.ok(!s.files, 'KHONG duoc dinh kem file nao');
+});
+
+await ta('vuot so file cho phep -> chi gui du so, bao phan bi bo', async () => {
+  const m = mockMessage();
+  const r = await replyAnswer(
+    m,
+    ['[[attach: src/owner.mjs]]', '[[attach: src/chunk.mjs]]', '[[attach: src/redact.mjs]]', '[[attach: src/logger.mjs]]'].join(
+      '\nvà\n'
+    ),
+    { question: 'gửi 4 file', config: { ...OUT_CONFIG, outboundMaxFiles: 2 } }
+  );
+  assert.equal(r.attached.length, 2);
+  assert.equal(r.rejected.length, 2);
+});
+
+await ta('tat OUTBOUND_FILES_ENABLED -> ve hanh vi cu (chi text)', async () => {
+  const m = mockMessage();
+  const long = 'x'.repeat(5000);
+  const r = await replyAnswer(m, long, { question: 'q', config: { ...OUT_CONFIG, outboundFilesEnabled: false } });
+  assert.equal(r.sentAsFile, false);
+  assert.ok(m.sent.length > 1, 'phai cat vun nhu truoc');
+  for (const s of m.sent) assert.equal(s.files, undefined);
 });
 
 console.log(`\n${process.exitCode ? '🚫 CO TEST FAIL' : `🎉 ${pass}/${pass} test PASS`}\n`);

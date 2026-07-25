@@ -44,6 +44,12 @@ export const config = {
   userCooldownMs: num(process.env.USER_COOLDOWN_MS, 10_000),
   userHourlyLimit: num(process.env.USER_HOURLY_LIMIT, 30),
 
+  // Chieu RA: cau tra loi dai -> gui file .md; claude co the yeu cau dinh kem file repo
+  outboundFilesEnabled: bool(process.env.OUTBOUND_FILES_ENABLED, true),
+  outboundMaxInlineChars: num(process.env.OUTBOUND_MAX_INLINE_CHARS, 3500),
+  outboundMaxFileBytes: num(process.env.OUTBOUND_MAX_FILE_BYTES, 8 * 1024 * 1024),
+  outboundMaxFiles: num(process.env.OUTBOUND_MAX_FILES, 3),
+
   // Anh dinh kem: tai ve thu muc tam de claude doc bang tool Read, xoa sau khi tra loi
   attachmentsEnabled: bool(process.env.ATTACHMENTS_ENABLED, true),
   attachmentMaxCount: num(process.env.ATTACHMENT_MAX_COUNT, 4),

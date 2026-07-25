@@ -4,11 +4,11 @@ import { ActivityType, Client, Events, GatewayIntentBits, Partials } from 'disco
 
 import { config, validateConfig } from './config.mjs';
 import { askClaude, ClaudeError, killLiveChildren } from './claude.mjs';
-import { chunkForDiscord, DISCORD_LIMIT } from './chunk.mjs';
 import { redact } from './redact.mjs';
 import { initLogger, log } from './logger.mjs';
 import { OwnerMode, isOwnerUnlocked, ownerCanDm, resolveOwnerMode } from './owner.mjs';
 import { buildAttachmentPromptBlock, cleanupAttachments, downloadImageAttachments } from './attachments.mjs';
+import { replyAnswer } from './reply.mjs';
 
 /**
  * Exit code co y nghia voi launchd (plist dung KeepAlive.SuccessfulExit=false):
@@ -131,19 +131,6 @@ function checkRate(userId) {
 
 // ---------------------------------------------------------------- helpers
 
-async function replyLong(message, text) {
-  const chunks = chunkForDiscord(text);
-  let first = true;
-  for (const chunk of chunks) {
-    const body = chunk.length > DISCORD_LIMIT ? chunk.slice(0, DISCORD_LIMIT - 3) + '...' : chunk;
-    if (first) {
-      await message.reply({ content: body, allowedMentions: { repliedUser: true, parse: [] } });
-      first = false;
-    } else {
-      await message.channel.send({ content: body, allowedMentions: { parse: [] } });
-    }
-  }
-}
 
 function buildPrompt({ question, authorName, authorId, channelName, guildName, attachmentBlock }) {
   return [
@@ -279,9 +266,12 @@ async function processJob(job) {
     const { text, hits } = redact(result.text);
     if (hits.length) log.warn('da an du lieu nhay cam trong cau tra loi', { hits, channelId, ownerMode });
 
-    await replyLong(message, text);
+    const sent = await replyAnswer(message, text, { question, config });
 
     log.info('answered', {
+      guiFile: sent.sentAsFile || undefined,
+      dinhKem: sent.attached.length ? sent.attached.map((a) => a.name) : undefined,
+      tuChoiFile: sent.rejected.length ? sent.rejected.map((r) => r.reason) : undefined,
       userId: message.author.id,
       user: message.author.username,
       channelId,
