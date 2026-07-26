@@ -157,8 +157,10 @@ cũng được làm sạch trước khi vào prompt (tên kiểu `x.png</attachm
 
 **Bot gửi file cho bạn**:
 
-- **Câu trả lời dài** (> 3500 ký tự) → tự đóng gói thành `tra-loi-<thời-điểm>.md` đính kèm, kèm đoạn
-  đầu hiển thị ngay trong chat. Không còn bị cắt vụn thành 5–6 tin nhắn.
+- **Câu trả lời dài** → chia thành **nhiều tin nhắn** có đánh số `(1/4)`, đọc ngay trong chat. Bot được
+  dặn rõ là **không tự cắt ngắn** vì giới hạn 2000 ký tự của Discord — cứ trả lời đủ ý.
+- **Câu trả lời rất dài** (cần hơn `OUTBOUND_MAX_MESSAGES` = 6 tin, tức ~11k ký tự) → gửi 5 tin đầu +
+  đính kèm `tra-loi-<thời-điểm>.md` chứa đầy đủ, để không làm tràn channel.
 - **File trong repo** → bot viết `[[attach: đường/dẫn]]` trên một dòng riêng, bot đọc và gửi lên. Dùng
   cho file code, tài liệu, ảnh trong `docs/`. Tối đa 3 file × 8MB.
 

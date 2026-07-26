@@ -65,7 +65,20 @@ try {
   const { text, hits } = redact(res.text);
   console.log(text);
   console.log('─'.repeat(70));
-  console.log(`⏱  ${res.durationMs}ms · model ${config.model}${hits.length ? ` · 🛡 DA AN: ${hits.join(', ')}` : ''}`);
+
+  // Cho thay cau tra loi se duoc gui ra sao tren Discord
+  const { parseAttachRequests } = await import('../src/outbound.mjs');
+  const { chunkForDiscord } = await import('../src/chunk.mjs');
+  const { text: clean, paths } = parseAttachRequests(text);
+  const chunks = chunkForDiscord(clean).length;
+  const asFile = chunks > config.outboundMaxMessages;
+
+  console.log(
+    `⏱  ${res.durationMs}ms · model ${config.model} · ${clean.length} ký tự → ` +
+      (asFile ? `${config.outboundMaxMessages - 1} tin + file .md (vì cần ~${chunks} tin)` : `${chunks} tin nhắn`) +
+      (paths.length ? ` · ${paths.length} file đính kèm` : '') +
+      (hits.length ? ` · 🛡 DA AN: ${hits.join(', ')}` : '')
+  );
 } catch (err) {
   console.error(`\n❌ [${err.code || 'ERR'}] ${err.message}`);
   if (err.stderr) console.error(err.stderr.slice(0, 300));

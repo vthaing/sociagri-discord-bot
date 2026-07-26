@@ -150,7 +150,9 @@ function buildPrompt({ question, authorName, authorId, channelName, guildName, a
     '</discord_question>',
     attachmentBlock || '',
     '',
-    'Trả lời bằng tiếng Việt, ngắn gọn (3–8 câu), dùng markdown nhẹ. Nếu cần thì tra repo trước khi trả lời.',
+    'Trả lời bằng tiếng Việt, dùng markdown nhẹ. Nếu cần thì tra repo trước khi trả lời.',
+    'Độ dài tuỳ câu hỏi: đơn giản thì gọn, cần chi tiết thì viết đủ ý — KHÔNG tự cắt ngắn vì sợ dài,',
+    'bot sẽ tự chia thành nhiều tin nhắn.',
   ].join('\n');
 }
 

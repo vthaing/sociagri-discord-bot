@@ -322,10 +322,10 @@ await ta('file vuot dung luong -> TU CHOI', async () => {
   assert.equal(v.reason, OutboundSkip.TOO_BIG);
 });
 
-await ta('cau tra loi dai -> gui thanh file; ngan -> gui trong chat', () => {
-  assert.equal(shouldSendAsFile('x'.repeat(3600), { maxInlineChars: 3500 }), true);
-  assert.equal(shouldSendAsFile('ngắn gọn', { maxInlineChars: 3500 }), false);
-  assert.equal(shouldSendAsFile('', { maxInlineChars: 3500 }), false);
+await await ta('nguong file dua theo SO TIN, khong theo so ky tu', () => {
+  assert.equal(shouldSendAsFile({ chunkCount: 7, maxMessages: 6 }), true);
+  assert.equal(shouldSendAsFile({ chunkCount: 6, maxMessages: 6 }), false);
+  assert.equal(shouldSendAsFile({ chunkCount: 1, maxMessages: 6 }), false);
 });
 
 console.log('\n=== replyAnswer: wiring that (mock message, khong can Discord) ===');
@@ -334,7 +334,7 @@ const { replyAnswer } = await import('../src/reply.mjs');
 
 const OUT_CONFIG = {
   outboundFilesEnabled: true,
-  outboundMaxInlineChars: 3500,
+  outboundMaxMessages: 6,
   outboundMaxFileBytes: 8 * 1024 * 1024,
   outboundMaxFiles: 3,
   repoDir: REPO,
@@ -358,23 +358,41 @@ await ta('cau tra loi ngan -> 1 tin, khong file', async () => {
   assert.equal(m.sent[0].content, 'Ngắn gọn thôi.');
 });
 
-await ta('cau tra loi DAI -> 1 tin + file .md (khong cat vun)', async () => {
+await ta('cau tra loi DAI vua -> NHIEU TIN NHAN (khong day sang file)', async () => {
   const m = mockMessage();
-  const long = Array.from({ length: 200 }, (_, i) => `Dòng ${i} nói về ví tiền và marketplace.`).join('\n');
+  // ~5000 ky tu => ~3 tin, duoi nguong 6 tin
+  const long = Array.from({ length: 120 }, (_, i) => `Dòng ${i} nói về ví tiền và marketplace nông sản.`).join('\n');
   const r = await replyAnswer(m, long, { question: 'giải thích ví tiền', config: OUT_CONFIG });
 
+  assert.equal(r.sentAsFile, false, 'khong duoc day sang file khi chi vai tin');
+  assert.ok(m.sent.length > 1, `phai chia nhieu tin, got ${m.sent.length}`);
+  assert.ok(m.sent.length <= 6, `khong duoc vuot 6 tin, got ${m.sent.length}`);
+  for (const s of m.sent) assert.ok(s.content.length <= 2000, `tin ${s.content.length} ky tu > 2000`);
+
+  // Phai co danh so va giu du dau/cuoi
+  const all = m.sent.map((s) => s.content).join('\n');
+  assert.ok(all.includes('(1/'), 'thieu danh so tin nhan');
+  assert.ok(all.includes('Dòng 0 '), 'thieu dau');
+  assert.ok(all.includes('Dòng 119 '), 'thieu cuoi');
+  for (const s of m.sent) assert.equal(s.files, undefined, 'khong dinh kem file');
+});
+
+await ta('cau tra loi RAT dai -> gui vai tin + file .md day du', async () => {
+  const m = mockMessage();
+  const huge = Array.from({ length: 600 }, (_, i) => `Dòng ${i} mô tả chi tiết luồng marketplace và ví.`).join('\n');
+  const r = await replyAnswer(m, huge, { question: 'giải thích toàn bộ', config: OUT_CONFIG });
+
   assert.equal(r.sentAsFile, true);
-  assert.equal(m.sent.length, 1, `phai gui 1 tin, khong phai ${m.sent.length}`);
-  assert.equal(m.sent[0].files.length, 1);
-  assert.ok(/^tra-loi-.*\.md$/.test(m.sent[0].files[0].name), m.sent[0].files[0].name);
-  assert.ok(m.sent[0].content.length <= 2000, 'tin nhan phai trong gioi han Discord');
-  assert.ok(m.sent[0].content.includes('gửi kèm đầy đủ trong file'));
+  assert.ok(m.sent.length <= 6, `khong duoc tran channel, got ${m.sent.length}`);
+  const last = m.sent[m.sent.length - 1];
+  assert.equal(last.files.length, 1);
+  assert.ok(/^tra-loi-.*\.md$/.test(last.files[0].name), last.files[0].name);
 
   // File phai chua TOAN BO cau tra loi + cau hoi o header
-  const body = m.sent[0].files[0].attachment.toString('utf8');
+  const body = last.files[0].attachment.toString('utf8');
   assert.ok(body.includes('Dòng 0 '), 'thieu dau');
-  assert.ok(body.includes('Dòng 199 '), 'thieu cuoi');
-  assert.ok(body.includes('giải thích ví tiền'), 'thieu cau hoi o header');
+  assert.ok(body.includes('Dòng 599 '), 'thieu cuoi');
+  assert.ok(body.includes('giải thích toàn bộ'), 'thieu cau hoi o header');
 });
 
 await ta('[[attach: file nguon]] -> dinh kem file that', async () => {

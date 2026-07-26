@@ -129,10 +129,14 @@ export async function loadOutboundFile(file) {
 }
 
 /**
- * Cau tra loi co nen gui thanh FILE thay vi cat vun nhieu tin nhan?
+ * Cau tra loi co nen gui thanh FILE khong?
+ *
+ * Nhieu tin nhan la BINH THUONG va duoc uu tien (nguoi doc thay noi dung ngay trong
+ * chat, khong phai mo file). Chi chuyen sang file khi so tin nhieu den muc lam tran
+ * channel — luc do gui doan dau + file day du.
  */
-export function shouldSendAsFile(text, { maxInlineChars }) {
-  return String(text ?? '').length > maxInlineChars;
+export function shouldSendAsFile({ chunkCount, maxMessages }) {
+  return chunkCount > maxMessages;
 }
 
 /**

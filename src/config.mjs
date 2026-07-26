@@ -46,7 +46,9 @@ export const config = {
 
   // Chieu RA: cau tra loi dai -> gui file .md; claude co the yeu cau dinh kem file repo
   outboundFilesEnabled: bool(process.env.OUTBOUND_FILES_ENABLED, true),
-  outboundMaxInlineChars: num(process.env.OUTBOUND_MAX_INLINE_CHARS, 3500),
+  // So tin nhan toi da duoc gui cho MOT cau tra loi. Vuot nguong nay moi dong goi
+  // thanh file .md (moi tin ~1900 ky tu => 6 tin ~ 11k ky tu).
+  outboundMaxMessages: num(process.env.OUTBOUND_MAX_MESSAGES, 6),
   outboundMaxFileBytes: num(process.env.OUTBOUND_MAX_FILE_BYTES, 8 * 1024 * 1024),
   outboundMaxFiles: num(process.env.OUTBOUND_MAX_FILES, 3),
 

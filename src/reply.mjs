@@ -16,12 +16,25 @@ import {
  * (import bot.mjs se kich hoat bootstrap + dang nhap Discord).
  */
 
+/**
+ * Gui cau tra loi thanh NHIEU TIN NHAN khi can (Discord gioi han 2000 ky tu/tin).
+ * Co nhieu tin thi danh so `(1/4)` de nguoi doc biet con nua — bang small-text cua
+ * Discord (`-# `) cho khoi chiem cho.
+ */
 export async function replyLong(message, text, files = []) {
   const chunks = chunkForDiscord(text);
+  const many = chunks.length > 1;
   let first = true;
+
   for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const body = chunk.length > DISCORD_LIMIT ? chunk.slice(0, DISCORD_LIMIT - 3) + '...' : chunk;
+    let body = chunks[i];
+    if (many) {
+      const footer = `\n-# (${i + 1}/${chunks.length})`;
+      body = (body.length + footer.length > DISCORD_LIMIT ? body.slice(0, DISCORD_LIMIT - footer.length - 3) + '...' : body) + footer;
+    } else if (body.length > DISCORD_LIMIT) {
+      body = body.slice(0, DISCORD_LIMIT - 3) + '...';
+    }
+
     // File dinh kem vao tin CUOI: nguoi doc thay noi dung truoc, file sau
     const attach = i === chunks.length - 1 && files.length ? files : undefined;
 
@@ -32,6 +45,7 @@ export async function replyLong(message, text, files = []) {
       await message.channel.send({ content: body, files: attach, allowedMentions: { parse: [] } });
     }
   }
+  return chunks.length;
 }
 
 /**
@@ -42,8 +56,8 @@ export async function replyLong(message, text, files = []) {
  */
 export async function replyAnswer(message, rawText, { question, config }) {
   if (!config.outboundFilesEnabled) {
-    await replyLong(message, rawText);
-    return { sentAsFile: false, attached: [], rejected: [] };
+    const n = await replyLong(message, rawText);
+    return { sentAsFile: false, attached: [], rejected: [], messagesSent: n };
   }
 
   const { text, paths } = parseAttachRequests(rawText);
@@ -72,20 +86,22 @@ export async function replyAnswer(message, rawText, { question, config }) {
       attached.push({ name: loaded.name, bytes: verdict.bytes, redacted: loaded.redacted });
     }
 
-    // 2. Cau tra loi qua dai -> dong goi thanh file .md thay vi cat vun
+    // 2. Nhieu tin nhan la binh thuong; chi dong goi file khi qua nhieu tin
     let body = text;
     let sentAsFile = false;
+    const chunkCount = chunkForDiscord(text).length;
 
-    if (shouldSendAsFile(text, { maxInlineChars: config.outboundMaxInlineChars })) {
+    if (shouldSendAsFile({ chunkCount, maxMessages: config.outboundMaxMessages })) {
       const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
       const answerFile = await writeAnswerFile(text, { question, stamp });
       outDir = answerFile.dir;
       files.unshift({ attachment: await fsp.readFile(answerFile.path), name: answerFile.name });
 
-      const preview = chunkForDiscord(text)[0];
+      // Van gui vai tin dau de doc ngay trong chat, phan con lai o file
+      const keep = Math.max(1, config.outboundMaxMessages - 1);
       body =
-        `${preview.length > 1200 ? preview.slice(0, 1200).trimEnd() + '…' : preview}\n\n` +
-        `📄 *Câu trả lời dài (${text.length} ký tự) nên mình gửi kèm đầy đủ trong file \`${answerFile.name}\`.*`;
+        chunkForDiscord(text).slice(0, keep).join('\n') +
+        `\n\n📄 *Câu trả lời rất dài (${text.length} ký tự, ~${chunkCount} tin) — mình gửi kèm đầy đủ trong \`${answerFile.name}\`.*`;
       sentAsFile = true;
     }
 
@@ -94,17 +110,9 @@ export async function replyAnswer(message, rawText, { question, config }) {
         '\n\n' + rejected.map((r) => `⚠️ *Không gửi được \`${path.basename(r.path)}\`: ${r.reason}.*`).join('\n');
     }
 
-    if (sentAsFile) {
-      await message.reply({
-        content: body.length > DISCORD_LIMIT ? body.slice(0, DISCORD_LIMIT - 3) + '...' : body,
-        files,
-        allowedMentions: { repliedUser: true, parse: [] },
-      });
-    } else {
-      await replyLong(message, body, files);
-    }
+    const messagesSent = await replyLong(message, body, files);
 
-    return { sentAsFile, attached, rejected };
+    return { sentAsFile, attached, rejected, messagesSent };
   } finally {
     await cleanupOutbound(outDir);
   }
