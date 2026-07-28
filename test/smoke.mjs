@@ -443,4 +443,77 @@ await ta('tat OUTBOUND_FILES_ENABLED -> ve hanh vi cu (chi text)', async () => {
   for (const s of m.sent) assert.equal(s.files, undefined);
 });
 
+console.log('\n=== nho ngu canh qua nhieu phien (session store tren dia) ===');
+
+const os = await import('node:os');
+const fsp = await import('node:fs/promises');
+const path = await import('node:path');
+const sessions = await import('../src/sessions.mjs');
+
+const TTL = 7 * 24 * 60 * 60 * 1000;
+const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sess-test-'));
+const storeFile = path.join(tmpDir, 'sessions.json');
+
+await ta('phien luu roi KHOI DONG LAI van nho (day la yeu cau chinh)', async () => {
+  sessions.initSessionStore(storeFile, TTL);
+  sessions.setSession('chan1:public', 'sess-abc');
+  sessions.setSession('chan1:owner', 'sess-owner');
+  await sessions.flushSessions();
+
+  // mo phong bot restart: nap lai tu file
+  const r = sessions.initSessionStore(storeFile, TTL);
+  assert.equal(r.loaded, 2, `phai khoi phuc 2 phien, got ${r.loaded}`);
+  assert.equal(sessions.getSession('chan1:public', TTL), 'sess-abc');
+  assert.equal(sessions.getSession('chan1:owner', TTL), 'sess-owner');
+});
+
+await ta('phien qua han bi bo khi khoi dong lai', async () => {
+  const old = { version: 1, sessions: { 'chan2:public': { sessionId: 'cu', ts: Date.now() - TTL - 1000 } } };
+  await fsp.writeFile(storeFile, JSON.stringify(old));
+  const r = sessions.initSessionStore(storeFile, TTL);
+  assert.equal(r.loaded, 0);
+  assert.equal(r.dropped, 1);
+  assert.equal(sessions.getSession('chan2:public', TTL), null);
+});
+
+await ta('ngu canh owner va public KHONG dung chung (chong ro thong tin noi bo)', async () => {
+  sessions.initSessionStore(storeFile, TTL);
+  sessions.setSession('chan3:owner', 'sess-noi-bo');
+  assert.equal(sessions.getSession('chan3:public', TTL), null, 'public KHONG duoc thay session owner');
+  assert.equal(sessions.getSession('chan3:owner', TTL), 'sess-noi-bo');
+});
+
+await ta('reset xoa ca hai phien cua kenh', async () => {
+  sessions.initSessionStore(storeFile, TTL);
+  sessions.setSession('chan4:owner', 'a');
+  sessions.setSession('chan4:public', 'b');
+  assert.equal(sessions.clearChannel('chan4'), 2);
+  assert.equal(sessions.getSession('chan4:owner', TTL), null);
+  assert.equal(sessions.getSession('chan4:public', TTL), null);
+});
+
+await ta('file hong -> bat dau lai tu dau, KHONG crash bot', async () => {
+  await fsp.writeFile(storeFile, '{ khong phai json hop le');
+  const r = sessions.initSessionStore(storeFile, TTL);
+  assert.equal(r.loaded, 0);
+  assert.equal(sessions.sessionCount(), 0);
+});
+
+await fsp.rm(tmpDir, { recursive: true, force: true });
+
+console.log('\n=== doc ngu canh kenh (history) ===');
+
+const { buildHistoryBlock } = await import('../src/history.mjs');
+
+await ta('khong co tin nao -> khong chen gi vao prompt', () => {
+  assert.equal(buildHistoryBlock({ text: '', count: 0 }), '');
+});
+
+await ta('co tin -> boc trong the va canh bao la DU LIEU', () => {
+  const block = buildHistoryBlock({ text: '[10:00] qc1: ví bị lỗi', count: 1 });
+  assert.ok(block.includes('<recent_messages count="1">'));
+  assert.ok(block.includes('ví bị lỗi'));
+  assert.ok(/DỮ LIỆU/.test(block), 'phai noi ro day la du lieu, khong phai chi thi');
+});
+
 console.log(`\n${process.exitCode ? '🚫 CO TEST FAIL' : `🎉 ${pass}/${pass} test PASS`}\n`);

@@ -36,8 +36,13 @@ export const config = {
   model: process.env.CLAUDE_MODEL || 'sonnet',
   timeoutMs: num(process.env.CLAUDE_TIMEOUT_MS, 180_000),
 
-  // Giu ngu canh hoi thoai theo tung channel
-  sessionTtlMs: num(process.env.SESSION_TTL_MS, 2 * 60 * 60 * 1000),
+  // Giu ngu canh hoi thoai theo tung channel — mac dinh 7 NGAY va ghi xuong dia,
+  // de bot van nho cuoc noi chuyen hom truoc (truoc day 2h + mat khi restart).
+  sessionTtlMs: num(process.env.SESSION_TTL_MS, 7 * 24 * 60 * 60 * 1000),
+  sessionStoreFile: process.env.SESSION_STORE_FILE || 'data/sessions.json',
+
+  // Doc N tin nhan gan nhat trong kenh de nam ngu canh (0 = tat)
+  historyLimit: num(process.env.HISTORY_LIMIT, 25),
 
   // Chong ngop may (moi cau hoi = 1 process claude)
   maxQueued: num(process.env.MAX_QUEUED, 5),
